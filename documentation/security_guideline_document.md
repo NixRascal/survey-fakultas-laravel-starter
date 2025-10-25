@@ -1,116 +1,118 @@
-# Security Guidelines for codeguide-starter
+# Security Guidelines for the Faculty Survey Application
 
-This document defines mandatory security principles and implementation best practices tailored to the **codeguide-starter** repository. It aligns with Security-by-Design, Least Privilege, Defense-in-Depth, and other core security tenets. All sections reference specific areas of the codebase (e.g., `/app/api/auth/route.ts`, CSS files, environment configuration) to ensure practical guidance.
-
----
-
-## 1. Security by Design
-
-• Embed security from day one: review threat models whenever adding new features (e.g., new API routes, data fetching).
-• Apply “secure defaults” in Next.js configuration (`next.config.js`), enabling strict mode and disabling debug flags in production builds.
-• Maintain a security checklist in your PR template to confirm that each change has been reviewed against this guideline.
+This document outlines security best practices and recommendations tailored to the **Next.js 14 + TypeScript + Tailwind CSS + Drizzle ORM** faculty survey application starter. It aligns with core security principles—Security by Design, Least Privilege, Defense in Depth—and addresses authentication, data protection, input handling, API security, infrastructure, and DevOps.
 
 ---
+
+## 1. Security by Design & Secure Defaults
+
+- Adopt a threat-modeling mindset from the start. Document critical assets (e.g., respondent data, admin credentials) and trust boundaries (public pages vs. admin panel).  
+- Initialize all configurations with the most restrictive settings. Enable HTTPS enforcement and HSTS by default.  
+- Use environment variables (`.env`) for all secrets—never commit API keys, database credentials, or private keys to the repository.
 
 ## 2. Authentication & Access Control
 
-### 2.1 Password Storage
-- Use **bcrypt** (or Argon2) with a per-user salt to hash passwords in `/app/api/auth/route.ts`.
-- Enforce a strong password policy on both client and server: minimum 12 characters, mixed case, numbers, and symbols.
+### 2.1 Admin Authentication
+- Leverage Better Auth’s built-in session management. Ensure session tokens:  
+  - Are stored in secure, `HttpOnly` cookies  
+  - Have both idle and absolute timeouts  
+  - Regenerate upon privilege changes (prevent session fixation)  
+- Enforce strong passwords: minimum length 12, complexity (upper, lower, digits, symbols), and rate-limit sign-in attempts.
 
-### 2.2 Session Management
-- Issue sessions via Secure, HttpOnly, SameSite=strict cookies. Do **not** expose tokens to JavaScript.
-- Implement absolute and idle timeouts. For example, invalidate sessions after 30 minutes of inactivity.
-- Protect against session fixation by regenerating session IDs after authentication.
+### 2.2 Role-Based Access Control (RBAC)
+- Extend the `users` schema with a `role` field (e.g., `super-admin`, `admin`).  
+- Implement server-side middleware to gate protected routes (`/dashboard`, `/api/*`) based on role.  
+- Principle of Least Privilege: grant only required permissions (e.g., only `super-admin` can manage other admins).
 
-### 2.3 Brute-Force & Rate Limiting
-- Apply rate limiting at the API layer (e.g., using `express-rate-limit` or Next.js middleware) on `/api/auth` to throttle repeated login attempts.
-- Introduce exponential backoff or temporary lockout after N failed attempts.
+### 2.3 Multi-Factor Authentication (MFA)
+- Consider integrating an MFA factor (TOTP or SMS) for `super-admin` accounts or any high-risk actions (user management, schema migrations).
 
-### 2.4 Role-Based Access Control (Future)
-- Define user roles in your database model (e.g., `role = 'user' | 'admin'`).
-- Enforce server-side authorization checks in every protected route (e.g., in `dashboard/layout.tsx` loader functions).
+## 3. Input Handling & Validation
 
----
+### 3.1 Server-Side Validation
+- Use a schema-validation library (e.g., Zod) for all API routes and Server Actions.  
+- Validate: data types, string lengths, allowed enums, numeric ranges.  
+- On failure, return standardized error responses (avoid leaking stack traces).
 
-## 3. Input Handling & Processing
+### 3.2 Prevent Injection Attacks
+- Drizzle ORM automatically parameterizes queries. Avoid raw SQL unless necessary, and always use placeholders.  
+- Sanitize any user-provided strings before passing to third-party libraries (e.g., the Gemini API).
 
-### 3.1 Validate & Sanitize All Inputs
-- On **client** (`sign-up/page.tsx`, `sign-in/page.tsx`): perform basic format checks (email regex, password length).
-- On **server** (`/app/api/auth/route.ts`): re-validate inputs with a schema validator (e.g., `zod`, `Joi`).
-- Reject or sanitize any unexpected fields to prevent injection attacks.
+### 3.3 Cross-Site Scripting (XSS)
+- Output-encode user-supplied content in React components. For rich text or open-ended responses displayed in the admin panel, use a library like DOMPurify with strict allow-lists.  
+- Set a strong Content Security Policy (CSP) header via Next.js custom server or middleware.
 
-### 3.2 Prevent Injection
-- If you introduce a database later, always use parameterized queries or an ORM (e.g., Prisma) rather than string concatenation.
-- Avoid dynamic `eval()` or template rendering with unsanitized user input.
-
-### 3.3 Safe Redirects
-- When redirecting after login or logout, validate the target against an allow-list to prevent open redirects.
-
----
+### 3.4 Cross-Site Request Forgery (CSRF)
+- For state-changing requests (POST, PUT, DELETE), implement CSRF tokens. Better Auth may provide built-in CSRF protection—validate on each form submission.
 
 ## 4. Data Protection & Privacy
 
-### 4.1 Encryption & Secrets
-- Enforce HTTPS/TLS 1.2+ for all front-end ↔ back-end communications.
-- Never commit secrets—use environment variables and a secrets manager (e.g., AWS Secrets Manager, Vault).
+### 4.1 Encryption in Transit & at Rest
+- Enforce HTTPS (TLS 1.2+) for all traffic.  
+- Encrypt database connections (PostgreSQL `sslmode=require`).  
+- Encrypt sensitive fields (e.g., API keys, PII) at rest using AES-256 if stored server-side.
 
-### 4.2 Sensitive Data Handling
-- Do ​not​ log raw passwords, tokens, or PII in server logs. Mask or redact any user identifiers.
-- If storing PII in `data.json` or a future database, classify it and apply data retention policies.
+### 4.2 Secure Password Storage
+- Rely on Better Auth’s secure hashing (bcrypt or Argon2 with unique salts). Verify configuration meets current best practices (e.g., Argon2id).
 
----
+### 4.3 Protection of PII
+- Minimize data collection. Only store respondent identifiers required to enforce “one submission per user.”  
+- Mask or redact PII in logs and error messages.  
+- Provide a data-deletion workflow to comply with GDPR/CCPA requests.
 
 ## 5. API & Service Security
 
-### 5.1 HTTPS Enforcement
-- In production, redirect all HTTP traffic to HTTPS (e.g., via Vercel’s redirect rules or custom middleware).
+### 5.1 Endpoint Hardening
+- Secure all `app/api/*` routes: require authentication for admin endpoints, and rate-limit public survey submission routes.  
+- Use HTTP verbs semantically (GET for reads, POST for creation). Verify method on the server side.
 
-### 5.2 CORS
-- Configure `next.config.js` or API middleware to allow **only** your front-end origin (e.g., `https://your-domain.com`).
+### 5.2 Rate Limiting & Throttling
+- Implement IP-based throttling on `/api/survey/submit` to defend against spam or DoS.  
+- Consider using a middleware (e.g., `express-rate-limit` or Vercel Edge middleware).
 
-### 5.3 API Versioning & Minimal Exposure
-- Version your API routes (e.g., `/api/v1/auth`) to handle future changes without breaking clients.
-- Return only necessary fields in JSON responses; avoid leaking internal server paths or stack traces.
+### 5.3 CORS Configuration
+- If serving the frontend and API from the same domain, disable CORS. If not, restrict `Access-Control-Allow-Origin` to trusted domains only.
 
----
+### 5.4 Secure Secrets Management
+- Store `GEMINI_API_KEY`, database credentials, and encryption keys in a secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault) when in production.
 
-## 6. Web Application Security Hygiene
+## 6. Frontend Security & Hygiene
 
-### 6.1 CSRF Protection
-- Use anti-CSRF tokens for any state-changing API calls. Integrate Next.js CSRF middleware or implement synchronizer tokens stored in cookies.
-
-### 6.2 Security Headers
-- In `next.config.js` (or a custom server), add these headers:
-  - `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`
-  - `X-Content-Type-Options: nosniff`
-  - `X-Frame-Options: DENY`
-  - `Referrer-Policy: no-referrer-when-downgrade`
-  - `Content-Security-Policy`: restrict script/style/src to self and trusted CDNs.
-
-### 6.3 Secure Cookies
-- Set `Secure`, `HttpOnly`, `SameSite=Strict` on all cookies. Avoid storing sensitive data in `localStorage`.
-
-### 6.4 Prevent XSS
-- Escape or encode all user-supplied data in React templates. Avoid `dangerouslySetInnerHTML` unless content is sanitized.
-
----
+- Set security headers:  
+  - `Content-Security-Policy` (default-src 'self'; script-src 'self')  
+  - `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`  
+  - `X-Frame-Options: DENY`  
+  - `X-Content-Type-Options: nosniff`  
+  - `Referrer-Policy: no-referrer`  
+- Secure Cookies: `Secure`, `HttpOnly`, `SameSite=Strict` for session cookies.
+- Avoid storing any sensitive tokens in `localStorage` or `sessionStorage`.
+- Use Subresource Integrity (SRI) when importing third-party scripts.
 
 ## 7. Infrastructure & Configuration Management
 
-- Harden your hosting environment (e.g., Vercel/Netlify) by disabling unnecessary endpoints (GraphQL/GraphiQL playgrounds in production).
-- Rotate secrets and API keys regularly via your secrets manager.
-- Maintain minimal privileges: e.g., database accounts should only have read/write on required tables.
-- Keep Node.js, Next.js, and all system packages up to date.
+- Harden server OS and disable all unnecessary ports and services.  
+- Rotate credentials (database, SSH keys) regularly.  
+- Ensure Docker images are built from minimal, up-to-date base images.  
+- Disable verbose error reporting in production. Ensure stack traces are not exposed to end users.
+
+## 8. Dependency & Supply Chain Security
+
+- Maintain a lockfile (`package-lock.json`).  
+- Regularly run automated dependency scans (e.g., Snyk, Dependabot) to detect known vulnerabilities.  
+- Audit and remove unused packages to minimize the attack surface.
+
+## 9. DevOps & CI/CD Security
+
+- Enforce branch protection rules. Require code reviews and passing tests before merging.  
+- Store all CI secrets (e.g., deploy keys) in the CI provider’s secure vault.  
+- Integrate security linters (ESLint security plugins) and run automated tests on pull requests.
+
+## 10. Logging, Monitoring & Incident Response
+
+- Centralize logs (application, access, errors) in a SIEM or log management system.  
+- Monitor for anomalous behavior: multiple failed login attempts, spike in survey submissions, unexpected API usage.  
+- Define an incident response plan: detection, containment, eradication, recovery, and post-mortem.
 
 ---
 
-## 8. Dependency Management
-
-- Commit and maintain `package-lock.json` to guarantee reproducible builds.
-- Integrate a vulnerability scanner (e.g., GitHub Dependabot, Snyk) to monitor and alert on CVEs in dependencies.
-- Trim unused packages; each added library increases the attack surface.
-
----
-
-Adherence to these guidelines will ensure that **codeguide-starter** remains secure, maintainable, and resilient as it evolves. Regularly review and update this document to reflect new threats and best practices.
+By following these guidelines, the faculty survey application will be built with security at its core—protecting both respondents and administrators while maintaining data integrity and privacy. Regularly revisit and update these practices as the application evolves and new threats emerge.
